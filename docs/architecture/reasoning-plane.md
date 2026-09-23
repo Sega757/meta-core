@@ -14,7 +14,11 @@ Packet.
   signature verification of inbound AIDL commands.
 - Runs inside a **Python virtual environment (venv)**, isolating dependencies
   such as `cryptography` and `numpy`.
-- **Blocked raw network sockets** — no path to the open internet.
+- **Blocked raw network sockets** — no path to the open internet, except
+  through the whitelisted egress proxy
+  ([ADR-0009](../decisions/0009-egress-proxy-for-llm-calls.md)), which is
+  itself implemented as an AI Gateway enforcing per-request spend ceilings
+  ([ADR-0012](../decisions/0012-ai-gateway-egress-implementation.md)).
 - **Zero database credentials** — no keys, no connection strings, for
   either SQLite or Redis.
 
@@ -35,6 +39,15 @@ flowchart TD
 | Think | Processes the payload inside the sandboxed runtime | Logical strategy |
 | Act | Compiles the strategy into a strict JSON-Schema 2020-12 structure | Decision Packet |
 | Check | Hands the packet to `validator.py` in the Control Plane sidecar | Approve / escalate signal |
+
+## Context budgeting
+
+Perceive doesn't hand Think an unbounded replay of `event_stream.jsonl`.
+The context window is split into fixed bands — system prompt, tool
+descriptions, retrieved context, history, and a reserved generation buffer
+— so cost and attention degradation both stay bounded regardless of how
+much history has accumulated. Full band allocation:
+[ADR-0014](../decisions/0014-context-budgeting.md).
 
 ## Example Decision Packet
 
@@ -66,6 +79,13 @@ database layer.
 - **No self-disable path** — the Validator and Kill-Switch live in a
   separate sidecar container, so nothing the agent does inside its own
   sandbox can touch them. See [Control Plane](control-plane.md).
+- **Intent pre-filtering** — before unstructured external content (a
+  scraped page, an uploaded document, a comment) enters the Think-phase
+  prompt, a lightweight classifier screens it for injection/manipulation
+  patterns; flagged content is excluded from the prompt rather than passed
+  through for the main model to reason about. (Architectural extrapolation
+  — no specific classifier model or score threshold is fixed yet; see Open
+  questions.)
 
 ## Open questions
 
@@ -74,9 +94,12 @@ database layer.
 - Whether a validation failure's detail is fed back to the agent to drive an
   automatic corrective Perceive-Think-Act retry, or requires external
   intervention.
-- The exact token-budgeting logic used when converting raw
-  `event_stream.jsonl` lines into a model prompt during Perceive.
+- ~~Context token budgeting~~ — resolved by
+  [ADR-0014](../decisions/0014-context-budgeting.md).
 - The transport format `agent.py` uses to reach the Node.js AIDL IPC bridge.
+- Which classifier model and score threshold the intent pre-filter uses,
+  and what happens to content it flags (dropped silently vs. logged to
+  `event_stream.jsonl` as a rejected input).
 
 See [`docs/open-questions.md`](../open-questions.md) for the full,
 consolidated list.

@@ -12,7 +12,7 @@ here has write access to any other plane.
 |---|---|---|---|
 | `transponder.py` | Python | Writes `event_stream.jsonl` | Atomic `flush + os.fsync` event logging |
 | `event_stream.jsonl` | Append-only local file | Shared read interface | The single source of truth for system history |
-| `observer.py` | Python | Read-only parsing | Anomaly filtering (Huber Loss, Z-score), Trace DAG construction, loop detection |
+| `observer.py` | Python | Read-only parsing | Groups events into per-run OpenTelemetry-style span trees and scores them (Tool-Call Accuracy, Agent-Goal Accuracy) — see [ADR-0015](../decisions/0015-claim-level-trace-evaluation.md) |
 | `log_sync.sh` + `log-sync.timer` | Bash, systemd, Git 2.30+ | Read-only, batched push | Syncs the local log to a remote Git repository every 5 minutes |
 
 ## Durability: why `flush + os.fsync`
@@ -51,6 +51,17 @@ accepts eventual consistency for remote telemetry (max 5-minute lag) to keep
 local execution fast. Full trade-off analysis:
 [ADR-0001](../decisions/0001-decoupled-telemetry-sync.md).
 
+## Claim-level trace evaluation
+
+Span-level metrics (duration, cost) can show *that* a PTAC cycle failed but
+not *why*. `agent.py` and the Control Plane sidecar each emit one span per
+Perceive/Think/Act/Check phase, carrying the prompt, retrieved context, and
+Decision Packet for that phase; `observer.py` assembles these into a
+per-run span tree instead of scanning for statistical outliers. This
+replaces the previously unspecified Huber Loss / Z-score filter — full
+rationale and the two trace-level scoring metrics:
+[ADR-0015](../decisions/0015-claim-level-trace-evaluation.md).
+
 ## Security properties
 
 - **Tamper resistance** — a compromised Reasoning Plane has no socket or
@@ -70,7 +81,11 @@ local execution fast. Full trade-off analysis:
   (SSH deploy key vs. HTTPS token).
 - Corruption handling for a truncated/incomplete write if a process dies
   mid-append.
-- Threshold values for the Huber Loss / Z-score anomaly filters in
-  `observer.py`, and the output schema for the generated Trace DAGs.
+- ~~Huber Loss / Z-score thresholds and Trace DAG output schema~~ —
+  superseded by [ADR-0015](../decisions/0015-claim-level-trace-evaluation.md):
+  the trace is now a standard OpenTelemetry span tree, and the filter is
+  trace-level evaluation scoring instead of a statistical outlier cutoff.
+- The pass/fail threshold for the Tool-Call Accuracy and Agent-Goal
+  Accuracy scores introduced by ADR-0015 is not yet fixed.
 
 See [`docs/open-questions.md`](../open-questions.md) for the full list.

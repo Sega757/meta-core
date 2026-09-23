@@ -38,6 +38,13 @@ subject/predicate pair, the computed ID collides with the existing row and
 the write is rejected (or treated as an idempotent update), never
 duplicated.
 
+The `provenance` field itself is a fixed enum —
+`ORGANIC_USER` / `SYNTHETIC_AGENT` / `VERIFIED_EXTERNAL` — not free text,
+and any read path feeding strategy adaptation or analytics must filter to
+`ORGANIC_USER`/`VERIFIED_EXTERNAL` by default. This stops the agent from
+learning from its own synthetic output as if it were ground truth. See
+[ADR-0013](../decisions/0013-provenance-typed-knowledge-objects.md).
+
 ## SQLite WAL mode
 
 Standard SQLite journaling blocks readers during a write. META-CORE enables
