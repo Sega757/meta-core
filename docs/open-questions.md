@@ -33,13 +33,15 @@ during implementation. Each item links back to the page where it surfaced.
 - **Validation-failure feedback loop** — whether a rejected Decision Packet's
   detail routes back to `agent.py` to trigger an automatic corrective PTAC
   retry, or requires human intervention. ([Reasoning Plane](architecture/reasoning-plane.md))
-- **Kill-Switch numeric ceilings** — the actual limits for execution time,
-  memory, token count, and loop-repetition count.
+- **Kill-Switch numeric ceilings** — execution-time, memory, and absolute
+  per-run token ceilings are still unset. Loop-repetition and spend-velocity
+  are now fixed by [ADR-0011](decisions/0011-loop-detection-algorithm.md)
+  and [ADR-0012](decisions/0012-ai-gateway-egress-implementation.md).
   ([L-E-J-D-A-S framework](security/l-e-j-d-a-s-framework.md))
-- **Active loop-detection algorithm** — the exact method (trace comparison,
-  repetition counting, max PTAC iterations) the Kill-Switch uses to declare
-  a live runtime loop, as opposed to `observer.py`'s passive DAG-based
-  detection. ([Control Plane](architecture/control-plane.md))
+- ~~Active loop-detection algorithm~~ — resolved:
+  [ADR-0011](decisions/0011-loop-detection-algorithm.md) specifies a
+  step-counter + semantic-hash + spend-velocity check run before dispatch.
+  ([Control Plane](architecture/control-plane.md))
 - **Post-kill state recovery** — rollback protocol for transactions cut off
   mid-execution by an L3 kill. ([Control Plane](architecture/control-plane.md))
 
@@ -96,11 +98,15 @@ during implementation. Each item links back to the page where it surfaced.
   provisioned. ([ADR-0001](decisions/0001-decoupled-telemetry-sync.md))
 - **Partial-write corruption handling** — behavior if a process terminates
   mid-append to `event_stream.jsonl`. ([Observability Plane](architecture/observability-plane.md))
-- **Anomaly-detection thresholds** — the actual Huber Loss / Z-score
-  parameters `observer.py` uses to flag an outlier.
+- ~~Anomaly-detection thresholds (Huber Loss / Z-score) and Trace DAG
+  schema~~ — superseded:
+  [ADR-0015](decisions/0015-claim-level-trace-evaluation.md) replaces both
+  with OpenTelemetry-style span trees and trace-level scoring.
   ([Observability Plane](architecture/observability-plane.md))
-- **Trace DAG schema** — the output data structure and target visualization
-  format (Mermaid, Graphviz, or otherwise). ([Observability Plane](architecture/observability-plane.md))
+- **Trace-eval pass/fail threshold** — the Tool-Call Accuracy / Agent-Goal
+  Accuracy cutoff introduced by
+  [ADR-0015](decisions/0015-claim-level-trace-evaluation.md) is not yet
+  fixed. ([Observability Plane](architecture/observability-plane.md))
 
 ## Deployment
 
@@ -135,9 +141,13 @@ during implementation. Each item links back to the page where it surfaced.
 
 - **LLM call fault tolerance** — retry/backoff logic for a failed API call
   inside the PTAC cycle. ([Reasoning Plane](architecture/reasoning-plane.md))
-- **Context token budgeting** — how raw `event_stream.jsonl` lines are
-  converted into a bounded model prompt during Perceive.
-  ([Reasoning Plane](architecture/reasoning-plane.md))
+- ~~Context token budgeting~~ — resolved:
+  [ADR-0014](decisions/0014-context-budgeting.md) fixes percentage bands
+  per prompt component. ([Reasoning Plane](architecture/reasoning-plane.md))
+- **Intent pre-filter model and threshold** — which classifier and score
+  cutoff screens unstructured external content before it enters the
+  Think-phase prompt, and whether flagged content is dropped silently or
+  logged. ([Reasoning Plane](architecture/reasoning-plane.md))
 - **ADK 2.0 binding** — the exact interfaces binding Neocortex actions to
   ADK 2.0 primitives. ([Reasoning Plane](architecture/reasoning-plane.md))
 - **Self-correction retry limit** — the maximum number of schema-validation
