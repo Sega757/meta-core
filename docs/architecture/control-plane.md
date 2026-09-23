@@ -36,6 +36,14 @@ The Kill-Switch executes independently of the Reasoning Plane's health — it
 can terminate the sandbox process even if the Python interpreter is
 100% CPU-saturated or otherwise unresponsive.
 
+The cyclic/recursive-loop signal specifically is implemented as a
+pre-dispatch check — a monotonic step counter, a SHA-256 semantic-hash
+repeat-call guard, and a rolling spend-velocity circuit breaker — evaluated
+*before* a tool call is dispatched rather than diagnosed after the fact.
+See [ADR-0011](../decisions/0011-loop-detection-algorithm.md). Token
+consumption is additionally bounded a layer earlier, at the egress proxy
+itself — see [ADR-0012](../decisions/0012-ai-gateway-egress-implementation.md).
+
 ## Validation gate in the PTAC flow
 
 ```mermaid
@@ -70,5 +78,11 @@ flowchart TD
   `SIGTERM`, or a webhook-style stop request).
 - Rollback/state-recovery behavior for transactions cut off mid-flight by an
   L3 kill.
+- ~~Active loop-detection algorithm~~ — resolved by
+  [ADR-0011](../decisions/0011-loop-detection-algorithm.md).
+- Kill-Switch numeric ceilings for execution time, memory, and absolute
+  per-run token count remain unset — ADR-0011 and
+  [ADR-0012](../decisions/0012-ai-gateway-egress-implementation.md) only
+  fix the loop-repetition and spend-velocity dimensions.
 
 See [`docs/open-questions.md`](../open-questions.md) for the full list.

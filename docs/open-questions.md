@@ -1,145 +1,118 @@
-# Open Questions
+# Open Questions & Concrete Specifications
 
-The META-CORE blueprint specifies *what* boundary each component enforces,
-but a number of interfaces and thresholds are referenced without a concrete
-specification. This page consolidates every such gap in one place so they
-can be tracked and closed deliberately, instead of discovered piecemeal
-during implementation. Each item links back to the page where it surfaced.
+The META-CORE blueprint specifies the boundaries each component enforces. This document consolidates the architectural resolutions and specifications for all open questions across transport, safety, data, validation, queueing, telemetry, deployment, and audit recommendations.
 
-## IPC & transport
+---
 
-- **AIDL Gateway ↔ Executor contract** — the interface definition
-  (method signatures, data types) bridging the Node.js API Backend and
-  `agent.py` is not specified. ([Execution Plane](architecture/execution-plane.md),
-  [Reasoning Plane](architecture/reasoning-plane.md))
-- **AIDL transport layer** — whether the bridge runs over stdio, Unix domain
-  sockets, TCP loopback, or named pipes, and what serializes the payload
-  between TypeScript and Python. ([Component Connectivity](architecture/component-connectivity.md))
-- **Sidecar transport protocol** — the network/IPC mechanism (HTTP, Unix
-  socket, gRPC) carrying Decision Packets from `agent.py` to the Control
-  Plane sidecar. ([Control Plane](architecture/control-plane.md))
-- **Kill-Switch termination signal** — whether the emergency stop is a
-  `SIGKILL`, `SIGTERM`, or a sidecar-issued stop request/webhook.
-  ([Control Plane](architecture/control-plane.md))
-- **AIDL security handshake** — how the Node.js backend authenticates the
-  connecting `agent.py` engine, so an unauthorized process can't spoof it.
-  ([Assembly Stages](deployment/assembly-stages.md))
+## 1. IPC & Transport
 
-## Safety logic
+- **AIDL Gateway ↔ Executor contract**: Standardized via gRPC using Protocol Buffers (`metacore.v1.ExecutionService`). Exposes explicit methods:
+  - `ExecuteAction(ActionRequest) returns (ActionResponse)`
+  - `GetState(StateRequest) returns (StateResponse)`
+  - `HealthCheck(HealthRequest) returns (HealthResponse)`
+- **AIDL transport layer**: gRPC over TCP loopback / internal container network with mTLS or token-based authentication. Serialization uses Protobuf v3 for strict type guarantees across Go / Node.js and Python.
+- **Sidecar transport protocol**: gRPC over HTTP/2 (`metacore.v1.ValidatorService`) between `reasoning-worker` and `control-sidecar`.
+- **Kill-Switch termination signal**: Two-phase termination protocol:
+  1. Sidecar issues `HaltExecution` gRPC signal to Execution Plane to lock state and abort active tasks.
+  2. Sidecar issues `SIGTERM` to the reasoning process; if process fails to exit within 5 seconds, issues `SIGKILL`.
+- **AIDL security handshake**: HMAC-SHA256 handshake on socket initialization using a shared secret injected via container volume secrets.
 
-- **L0–L3 escalation rules** — the concrete evaluation logic and numeric
-  thresholds distinguishing the four escalation tiers.
-  ([L-E-J-D-A-S framework](security/l-e-j-d-a-s-framework.md))
-- **Validation-failure feedback loop** — whether a rejected Decision Packet's
-  detail routes back to `agent.py` to trigger an automatic corrective PTAC
-  retry, or requires human intervention. ([Reasoning Plane](architecture/reasoning-plane.md))
-- **Kill-Switch numeric ceilings** — the actual limits for execution time,
-  memory, token count, and loop-repetition count.
-  ([L-E-J-D-A-S framework](security/l-e-j-d-a-s-framework.md))
-- **Active loop-detection algorithm** — the exact method (trace comparison,
-  repetition counting, max PTAC iterations) the Kill-Switch uses to declare
-  a live runtime loop, as opposed to `observer.py`'s passive DAG-based
-  detection. ([Control Plane](architecture/control-plane.md))
-- **Post-kill state recovery** — rollback protocol for transactions cut off
-  mid-execution by an L3 kill. ([Control Plane](architecture/control-plane.md))
+---
 
-## Data & storage
+## 2. Safety Logic
 
-- **EGDS engine** — the underlying software running the Knowledge Object
-  store (plain relational tables, `pgvector`, an embedded key-value engine).
-  ([Data Architecture](architecture/data-architecture.md))
-- **Embedding pipeline** — which model (local or external API) populates the
-  `embedding` field on a Knowledge Object. ([Data Architecture](architecture/data-architecture.md))
-- **Subject/predicate normalization** — casing, trimming, and encoding rules
-  applied before computing the SHA-256 fact ID. ([Data Architecture](architecture/data-architecture.md))
-- **SHA-256 collision handling** — no fallback/resolution framework is
-  defined. ([Data Architecture](architecture/data-architecture.md))
-- **WAL checkpoint policy** — automated checkpoint thresholds or explicit
-  `PRAGMA wal_checkpoint` scheduling to bound `-wal` file growth.
-  ([ADR-0004](decisions/0004-sqlite-wal-mode.md))
-- **Connection pool sizing** — max concurrent connection limits for the
-  SQLite driver inside the Next.js API server. ([ADR-0004](decisions/0004-sqlite-wal-mode.md))
+- **L0–L3 escalation rules**:
+  - **L0 (Info)**: Non-blocking audit event. Logged to `event_stream.jsonl` and execution proceeds immediately.
+  - **L1 (Warning / Self-Correct)**: Schema mismatch or minor policy violation. Decision Packet rejected with detailed failure payload routed back to `agent.py` for automated PTAC retry (max 3 retries).
+  - **L2 (Block / Authorization)**: Severe policy breach (out-of-bounds state mutation, unauthorized endpoint call). Action blocked, execution paused, operator alert dispatched via webhook.
+  - **L3 (Hard Panic / Kill-Switch)**: Unhandled loop, OOM, timeout, or safety invariant violation. Immediate process kill (`SIGKILL`), execution state locked, transaction rolled back.
+- **Validation-failure feedback loop**: L1 rejection returns a structured `ValidationFailure` message containing JSON Pointer errors to `agent.py`. The agent incorporates the error into the Think context and attempts self-correction up to 3 times before escalating to L2.
+- **Kill-Switch numeric ceilings**:
+  - Max Execution Time: 30 seconds per PTAC cycle.
+  - Max Memory Allocation: 512MB for `reasoning-worker`.
+  - Max Token Budget: 100,000 tokens per session.
+  - Max Loop Repetition: 3 identical consecutive Decision Packet hashes.
+- **Active loop-detection algorithm**: Resolved via [ADR-0011](decisions/0011-loop-detection-algorithm.md). Sliding window comparing SHA-256 hashes of the last 5 Decision Packets. Triggers L3 if 3 consecutive identical actions occur or >10 PTAC cycles complete without advancing state.
+- **Post-kill state recovery**: All Execution Plane state mutations execute inside transactional blocks (`BEGIN IMMEDIATE...COMMIT`) in SQLite WAL mode. On L3 trigger, pending uncommitted transactions automatically undergo `ROLLBACK`.
 
-## Validation & schema
+---
 
-- **Zod ↔ JSON Schema drift prevention** — how the Zod-to-JSON-Schema
-  compilation step is automated and kept current at build time.
-  ([ADR-0006](decisions/0006-dual-schema-validation.md))
-- **Validation-error reporting pipeline** — the interface routing a Zod or
-  JSON Schema validation failure back to the agent for self-correction.
-  ([ADR-0006](decisions/0006-dual-schema-validation.md))
+## 3. Data & Storage
 
-## Queueing & concurrency
+- **EGDS engine**: SQLite with `WAL` mode enabled, using `sqlite-vec` extension for local vector storage MVP (see [ADR-0010](decisions/0010-sqlite-for-vector-storage-mvp.md)). Provenance typing defined via [ADR-0013](decisions/0013-provenance-typed-knowledge-objects.md).
+- **Embedding pipeline**: Local `sentence-transformers` (`all-MiniLM-L6-v2`) or external provider embedding (`text-embedding-3-small`) routed strictly through the Egress Proxy ([ADR-0012](decisions/0012-ai-gateway-egress-implementation.md)).
+- **Subject/predicate normalization**: `lowercase(trim(subject))` and `lowercase(trim(predicate))` UTF-8 strings before computing SHA-256 Fact ID.
+- **SHA-256 collision handling**: Deterministic check: if `SHA-256(subject || predicate)` collides with an existing fact holding different text, append salt `|| sequence_id`.
+- **WAL checkpoint policy**: Passive checkpoint triggered every 1000 pages (~4MB) via `PRAGMA wal_autocheckpoint = 1000;`, plus daily scheduled `PRAGMA wal_checkpoint(TRUNCATE);`.
+- **Connection pool sizing**: Single write connection (`max: 1`) to eliminate write lock contention in SQLite WAL, plus up to 10 concurrent read connections.
 
-- **BullMQ idempotency-key generation** — the concrete algorithm workers use
-  to derive deduplication keys. ([Execution Plane](architecture/execution-plane.md))
-- **Redis lock TTL / expiry policy** — no defined time-to-live for
-  distributed agent locks, which risks a deadlock if a worker crashes
-  mid-execution. ([ADR-0005](decisions/0005-redis-bullmq-execution-only.md))
-- **Dead-letter queue behavior** — recovery procedure when an idempotent
-  worker repeatedly fails under the at-least-once delivery guarantee.
-  ([ADR-0005](decisions/0005-redis-bullmq-execution-only.md))
-- **Concurrency-breach behavior** — what happens to a request that exceeds
-  the 1–2 task Redis concurrency threshold (queued vs. rejected).
-  ([Component Connectivity](architecture/component-connectivity.md))
+---
 
-## Telemetry & observability
+## 4. Validation & Schema
 
-- **Event log rotation/retention** — no truncation or archival policy for
-  `event_stream.jsonl`, risking unbounded disk growth.
-  ([Observability Plane](architecture/observability-plane.md))
-- **Concurrent-writer locking** — the mechanism `transponder.py` uses when
-  multiple parallel agent processes append simultaneously.
-  ([Observability Plane](architecture/observability-plane.md))
-- **Git authentication** — whether `log_sync.sh` uses SSH deploy keys or
-  HTTPS tokens against the remote repository, and how credentials are
-  provisioned. ([ADR-0001](decisions/0001-decoupled-telemetry-sync.md))
-- **Partial-write corruption handling** — behavior if a process terminates
-  mid-append to `event_stream.jsonl`. ([Observability Plane](architecture/observability-plane.md))
-- **Anomaly-detection thresholds** — the actual Huber Loss / Z-score
-  parameters `observer.py` uses to flag an outlier.
-  ([Observability Plane](architecture/observability-plane.md))
-- **Trace DAG schema** — the output data structure and target visualization
-  format (Mermaid, Graphviz, or otherwise). ([Observability Plane](architecture/observability-plane.md))
+- **Zod ↔ JSON Schema drift prevention**: Automated build step (`npm run build:schemas`) using `zod-to-json-schema` to compile TypeScript Zod definitions to JSON Schema 2020-12 specs before container building.
+- **Validation-error reporting pipeline**: Errors formatted as JSON Schema 2020-12 validation output objects (RFC 7396) and sent to Reasoning Plane via gRPC error details.
 
-## Deployment
+---
 
-- **`docker-compose.yml` contents** — the path
-  `/containerization/docker-compose.yml` is referenced but the file itself
-  is not yet written. ([ADR-0007](decisions/0007-multi-container-deployment.md))
-- **Sandbox jail policy** — the concrete OS-level mechanism (AppArmor,
-  gVisor, or equivalent) enforcing the blocked-socket rule.
-  ([Deployment Requirements](deployment/requirements.md))
-- **`.env` contract** — the full set of environment variables linking Redis
-  to BullMQ and other Stage 1 services. ([Deployment Requirements](deployment/requirements.md))
-- **Process supervisor** — PM2, a systemd unit, or a container-native
-  restart policy for the Node.js API in production.
-  ([Deployment Requirements](deployment/requirements.md))
-- **Ed25519 key rotation policy** — distribution and lifecycle management of
-  the public keys `agent.py` uses to verify command authenticity.
-  ([Deployment Requirements](deployment/requirements.md))
-- **Package version pinning** — exact `cryptography`/`numpy` version
-  requirements are unspecified. ([Deployment Requirements](deployment/requirements.md))
-- **Stage 1 test suite** — the concrete commands/parameters for the
-  concurrency and write-lock verification tests.
-  ([Assembly Stages](deployment/assembly-stages.md))
+## 5. Queueing & Concurrency
 
-## Raised by external audits
+- **BullMQ idempotency-key generation**: `SHA-256(decision_packet_id || timestamp_10s_window)`.
+- **Redis lock TTL / expiry policy**: Default lock TTL of 15 seconds with heartbeat renewal every 5 seconds during execution. Auto-released on process termination or timeout.
+- **Dead-letter queue behavior**: Jobs failing 3 attempts with exponential backoff (1s, 5s, 25s) are moved to `dead-letter-queue` and trigger an operator alert.
+- **Concurrency-breach behavior**: Requests exceeding the 1–2 task worker limit are held in BullMQ FIFO queue. If queue depth exceeds 100, API rejects incoming requests with HTTP 429 (`TOO_MANY_REQUESTS`).
 
-- **Stack reconciliation, TOCTOU handling, formal verification scope, and a
-  possible "Economics" scorecard field** — see
-  [Audit 0001](audits/0001-go-grpc-tlaplus-stack-audit.md#open-questions-raised-by-this-audit)
-  for the full detail on each.
+---
 
-## Reasoning
+## 6. Telemetry & Observability
 
-- **LLM call fault tolerance** — retry/backoff logic for a failed API call
-  inside the PTAC cycle. ([Reasoning Plane](architecture/reasoning-plane.md))
-- **Context token budgeting** — how raw `event_stream.jsonl` lines are
-  converted into a bounded model prompt during Perceive.
-  ([Reasoning Plane](architecture/reasoning-plane.md))
-- **ADK 2.0 binding** — the exact interfaces binding Neocortex actions to
-  ADK 2.0 primitives. ([Reasoning Plane](architecture/reasoning-plane.md))
-- **Self-correction retry limit** — the maximum number of schema-validation
-  retries permitted in Check before the agent raises an operational
-  exception. ([Reasoning Plane](architecture/reasoning-plane.md))
+- **Event log rotation/retention**: Daily rotation via `logrotate` with 14-day retention and max 1GB total log volume limit.
+- **Concurrent-writer locking**: POSIX `flock` file locking in `transponder.py` combined with atomic append mode (`O_APPEND`) and `os.fsync()` flushing.
+- **Git authentication**: SSH deploy key mounted as a read-only secret volume inside the `log_sync.sh` container.
+- **Partial-write corruption handling**: Line-by-line JSON stream parser on startup. Corrupted lines are quarantined to `event_stream.corrupted.log` without breaking full stream recovery.
+- **Anomaly detection & Trace DAG**: Superseded by [ADR-0015](decisions/0015-claim-level-trace-evaluation.md) (OpenTelemetry span trees & claim-level trace scoring).
+- **Trace-eval pass/fail threshold**: Tool-Call Accuracy / Agent-Goal Accuracy cutoff parameters defined per ADR-0015.
+
+---
+
+## 7. Deployment
+
+- **`docker-compose.yml` contents**: Implemented under `/containerization/docker-compose.yml` with 5 microservices:
+  - `execution-api` (Go / Node backend)
+  - `reasoning-worker` (Python PTAC engine)
+  - `control-sidecar` (Validator & Kill-Switch)
+  - `egress-proxy` (Squid outbound LLM whitelist)
+  - `redis-queue` (BullMQ state storage)
+- **Sandbox jail policy**: Docker internal network isolation (`internal: true`) for `reasoning-net` combined with AppArmor profile blocking raw socket creation.
+- **`.env` contract**: Standardized configuration variables defined in `.env.example`:
+  ```env
+  EXECUTION_PORT=8080
+  GRPC_PORT=50051
+  CONTROL_SIDE_PORT=50052
+  REDIS_HOST=redis-queue
+  REDIS_PORT=6379
+  DB_PATH=/var/data/metacore.db
+  ```
+- **Process supervisor**: Docker container restart policy (`restart: unless-stopped`) with healthcheck dependencies.
+- **Ed25519 key rotation policy**: Keys mounted from read-only secret volume, rotated every 90 days.
+- **Package version pinning**: Strictly pinned in `requirements.txt` (Python 3.12) and `go.mod` (Go 1.22).
+- **Stage 1 test suite**: `go test -v -race ./...` for race detection and `k6` benchmark running 50 concurrent virtual users against mutation endpoints.
+
+---
+
+## 8. Raised by External Audits
+
+- **Stack reconciliation**: Unified gRPC/Protobuf contract allows seamless substitution of the Execution Plane implementation (`go-metacore` or Node.js) while maintaining full architectural boundaries.
+- **TOCTOU handling**: **State-Bound Capability Tokens**: Control Plane issues cryptographic tokens signed with Ed25519, valid for 500ms and bound to state snapshot hash `S_t`. Execution Plane re-verifies token against live state immediately prior to state commit.
+- **Formal verification**: Control Plane state transitions modeled in TLA+ (`docs/verification/control_plane.tla`).
+- **Cost/telemetry field**: "Economics" metric added to telemetry, tracking cumulative token costs and CPU/GPU compute time per action.
+- **Replay determinism bar**: `event_stream.jsonl` extended to record `random_seed`, `model_weights_hash`, and `prompt_sha256`.
+
+---
+
+## 9. Reasoning
+
+- **LLM call fault tolerance**: Exponential backoff with jitter (1s initial, 32s max, 4 retries max) on HTTP 429/5xx status codes from LLM providers.
+- **Context token budgeting**: Context budgeting rules defined via [ADR-0014](decisions/0014-context-budgeting.md).
+- **ADK 2.0 binding**: Neocortex actions wrapped as standard Google ADK 2.0 `Tool` instances.
+- **Self-correction retry limit**: Capped at 3 retries per PTAC cycle; exceeding this limit triggers L2 escalation.

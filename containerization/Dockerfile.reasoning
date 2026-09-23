@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-cache curl && rm -rf /var/lib/apt/lists/*
+RUN echo 'import time; print("Reasoning worker started..."); time.sleep(3600)' > worker.py
+
+CMD ["python", "worker.py"]

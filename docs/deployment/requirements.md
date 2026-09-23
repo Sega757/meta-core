@@ -30,9 +30,11 @@ target orchestration file is `/containerization/docker-compose.yml`.
 | `redis-queue` | Execution | Redis / BullMQ | Reachable only from `execution-api` |
 
 See [ADR-0007](../decisions/0007-multi-container-deployment.md) for the
-monolith-vs-multi-container trade-off, and
+monolith-vs-multi-container trade-off,
 [ADR-0009](../decisions/0009-egress-proxy-for-llm-calls.md) for why the
-sandbox's "no sockets" rule still allows LLM API calls.
+sandbox's "no sockets" rule still allows LLM API calls, and
+[ADR-0012](../decisions/0012-ai-gateway-egress-implementation.md) for how
+that proxy also enforces per-request spend budgets.
 
 ## Boot ordering
 

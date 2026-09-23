@@ -1,0 +1,9 @@
+FROM alpine:latest
+RUN apk add --no-cache squid
+RUN echo 'http_port 3128' > /etc/squid/squid.conf && \
+    echo 'acl allowed_hosts dstdomain .openai.com .anthropic.com .google.com' >> /etc/squid/squid.conf && \
+    echo 'http_access allow allowed_hosts' >> /etc/squid/squid.conf && \
+    echo 'http_access deny all' >> /etc/squid/squid.conf
+
+EXPOSE 3128
+CMD ["squid", "-N", "-d", "1"]

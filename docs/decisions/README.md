@@ -17,9 +17,18 @@ Alternatives & trade-offs → Consequences**.
 | [0008](0008-sequential-health-gated-bootstrap.md) | Sequential, health-gated stage bootstrap | Accepted |
 | [0009](0009-egress-proxy-for-llm-calls.md) | Egress proxy whitelisting for outbound LLM API calls | Accepted |
 | [0010](0010-sqlite-for-vector-storage-mvp.md) | SQLite-hosted vector storage for the MVP | Accepted |
+| [0011](0011-loop-detection-algorithm.md) | Semantic-hash and spend-velocity loop detection for the Kill-Switch | Accepted |
+| [0012](0012-ai-gateway-egress-implementation.md) | AI Gateway as the egress-proxy implementation, with per-request micro-budgets | Accepted — extends 0009 |
+| [0013](0013-provenance-typed-knowledge-objects.md) | Provenance-typed Knowledge Objects | Accepted |
+| [0014](0014-context-budgeting.md) | Fixed context-token budget bands for the Perceive phase | Accepted |
+| [0015](0015-claim-level-trace-evaluation.md) | Claim-level trace evaluation replaces ad-hoc Huber Loss / Z-score filtering | Accepted |
 
-All ten share a single recurring theme: wherever a performance or
+The first ten share a single recurring theme: wherever a performance or
 convenience win required trusting the Reasoning Plane with more access, the
 decision instead pays an isolation or latency cost to keep that plane
-untrusted. See [`docs/architecture/overview.md`](../architecture/overview.md)
-for how these decisions compose into the full system.
+untrusted. ADRs 0011–0015 harden specific mechanisms that were previously
+left as open questions — loop detection, spend control, data provenance,
+context assembly, and trace diagnosability — without changing that
+underlying trust boundary. See
+[`docs/architecture/overview.md`](../architecture/overview.md) for how these
+decisions compose into the full system.

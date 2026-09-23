@@ -1,0 +1,119 @@
+services:
+  execution-api:
+    build:
+      context: ..
+      dockerfile: containerization/Dockerfile.execution
+    container_name: metacore-execution-api
+    environment:
+      - PORT=8080
+      - GRPC_PORT=50051
+      - REDIS_HOST=redis-queue
+      - REDIS_PORT=6379
+      - DB_PATH=/var/data/metacore.db
+      - CONTROL_PLANE_URL=http://control-sidecar:50052
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    volumes:
+      - execution-db-data:/var/data
+      - event-logs:/var/log/metacore
+    networks:
+      - execution-net
+      - control-net
+    depends_on:
+      redis-queue:
+        condition: service_healthy
+      control-sidecar:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  reasoning-worker:
+    build:
+      context: ..
+      dockerfile: containerization/Dockerfile.reasoning
+    container_name: metacore-reasoning-worker
+    environment:
+      - EXECUTION_GRPC_TARGET=execution-api:50051
+      - CONTROL_SIDECAR_TARGET=control-sidecar:50052
+      - HTTP_PROXY=http://egress-proxy:3128
+      - HTTPS_PROXY=http://egress-proxy:3128
+      - NO_PROXY=control-sidecar,execution-api,localhost,127.0.0.1
+    volumes:
+      - event-logs:/var/log/metacore
+    networks:
+      - reasoning-net
+      - control-net
+    depends_on:
+      control-sidecar:
+        condition: service_healthy
+      execution-api:
+        condition: service_healthy
+
+  control-sidecar:
+    build:
+      context: ..
+      dockerfile: containerization/Dockerfile.control
+    container_name: metacore-control-sidecar
+    environment:
+      - PORT=50052
+      - KILL_SWITCH_ENABLED=true
+      - MAX_EXECUTION_TIME_SEC=30
+      - MAX_TOKEN_BUDGET=100000
+      - LOG_STREAM_PATH=/var/log/metacore/event_stream.jsonl
+    ports:
+      - "50052:50052"
+    volumes:
+      - event-logs:/var/log/metacore
+    networks:
+      - control-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50052/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  egress-proxy:
+    image: squid:latest
+    build:
+      context: ..
+      dockerfile: containerization/Dockerfile.egress-proxy
+    container_name: metacore-egress-proxy
+    networks:
+      - reasoning-net
+      - external-net
+
+  redis-queue:
+    image: redis:7-alpine
+    container_name: metacore-redis-queue
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - execution-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  execution-net:
+    internal: false
+  reasoning-net:
+    internal: true
+  control-net:
+    internal: true
+  external-net:
+    internal: false
+
+volumes:
+  execution-db-data:
+  redis-data:
+  event-logs:
