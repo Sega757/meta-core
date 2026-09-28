@@ -1,115 +1,81 @@
-# META-CORE MVP — Deterministic Architecture for Industrial AI Agents
+# META-CORE — Telemetry Layer v1.0
 
-META-CORE is an architectural blueprint for deploying autonomous AI agents in
-industrial settings where **safety, auditability, and determinism** matter
-more than raw model capability. It achieves this through a strict separation
-of concerns — an LLM-driven **Reasoning Plane** never holds the credentials
-or network access needed to touch production state directly. Every proposed
-action is compiled into a schema-validated **Decision Packet**, checked by an
-air-gapped **Control Plane** sidecar, and only then handed to a high-speed
-**Execution Plane** for commit.
+Portable agent-engine core. This repo contains the **working, tested** part of the
+architecture: the decoupled telemetry bus that every META-CORE node writes to.
+The rest of the design (Flow-Core, Control Plane, Chronos V3) is specified in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and tracked as roadmap.
 
-This repository is the technical documentation for that architecture: system
-topology, the Perceive-Think-Act-Check (PTAC) planning loop, the safety
-gateway, the telemetry pipeline, deployment requirements, and the
-architecture decisions behind each of them.
+## Core invariant
 
-> **Status:** Blueprint / MVP design documentation. Several interfaces
-> (the AIDL IPC contract, the L0–L3 escalation thresholds, the sidecar
-> transport protocol) are referenced throughout but not yet fully specified.
-> These are tracked explicitly in [`docs/open-questions.md`](docs/open-questions.md)
-> rather than left implicit.
+> A core never reports its state to a specific recipient. It publishes a fact via
+> the Transponder. Anyone who needs state reads the event stream.
 
-## Why operational planes
-
-A single-process agent that can read a prompt, call an LLM, and also hold
-database credentials is one prompt-injection away from an unauthorized write.
-META-CORE removes that risk architecturally rather than relying on model
-behavior: the plane that *thinks* is physically unable to reach the plane
-that *mutates state* without passing through a plane that *validates*.
-
-```mermaid
-flowchart LR
-    subgraph EXEC["Execution Plane — the hands"]
-        API["Node.js v20+ / Next.js API"]
-        DB[("SQLite (WAL mode)")]
-        Q[["Redis / BullMQ"]]
-    end
-
-    subgraph REASON["Reasoning Plane — the brain"]
-        AGENT["agent.py — Neocortex Engine\n(Python 3.12, ADK 2.0)"]
-    end
-
-    subgraph CONTROL["Control Plane — the guardian (sidecar)"]
-        VAL["validator.py — L-E-J-D-A-S"]
-        KS["AI Kill-Switch"]
-    end
-
-    subgraph OBS["Observability Plane — the clean trail"]
-        EVT[("event_stream.jsonl")]
-        OBSRV["observer.py"]
-        SYNC["log_sync.sh (systemd, 5 min)"]
-    end
-
-    API <--> DB
-    API <--> Q
-    API <-- "AIDL IPC bridge" --> AGENT
-    AGENT -- "Decision Packet\n(JSON Schema 2020-12)" --> VAL
-    VAL --> KS
-    VAL -- "PASS" --> API
-    VAL -- "FAIL / L0-L3" --> KS
-    AGENT -- "transponder.py\n(flush + os.fsync)" --> EVT
-    EVT -.->|read-only| OBSRV
-    EVT -.->|read-only| SYNC
-    SYNC -- "batched push" --> GIT[("Remote Git")]
+```
+agent / ADK node ──► transponder.py ──(flock+fsync append)──► event_stream.jsonl
+                                                                   │
+                         observer.py (read-only) ◄─────────────────┤
+                         rotate.sh  (100 MB → archive/*.gz) ◄──────┤
+                         log_sync.sh (git batch push, 5 min) ◄─────┘
 ```
 
-## Documentation map
+## Layout
 
-| Section | What's there |
+| Path | Purpose |
 |---|---|
-| [`docs/architecture/overview.md`](docs/architecture/overview.md) | The four operational planes, topology, and the PTAC state model |
-| [`docs/architecture/execution-plane.md`](docs/architecture/execution-plane.md) | Node.js/Next.js, SQLite WAL, Redis/BullMQ — the tightly-coupled state layer |
-| [`docs/architecture/reasoning-plane.md`](docs/architecture/reasoning-plane.md) | `agent.py`, the Neocortex Engine, and the sandboxed PTAC cycle |
-| [`docs/architecture/control-plane.md`](docs/architecture/control-plane.md) | `validator.py`, the L-E-J-D-A-S framework, and the AI Kill-Switch |
-| [`docs/architecture/observability-plane.md`](docs/architecture/observability-plane.md) | `event_stream.jsonl`, `observer.py`, `log_sync.sh`, the "Clean Trail" |
-| [`docs/architecture/data-architecture.md`](docs/architecture/data-architecture.md) | Knowledge Objects (EGDS), SHA-256 fact IDs, Zod / JSON Schema validation |
-| [`docs/architecture/component-connectivity.md`](docs/architecture/component-connectivity.md) | Where the system is tightly coupled vs. loosely coupled, and why |
-| [`docs/deployment/requirements.md`](docs/deployment/requirements.md) | Node.js v20+, Python 3.12, Git 2.30+, Docker Compose |
-| [`docs/deployment/assembly-stages.md`](docs/deployment/assembly-stages.md) | The 5-stage cascaded deployment plan |
-| [`docs/decisions/`](docs/decisions/README.md) | Architecture Decision Records (ADRs) — the trade-offs behind each boundary |
-| [`docs/audits/`](docs/audits/README.md) | Recorded external/internal reviews and counter-proposals, not yet adopted as ADRs |
-| [`docs/security/l-e-j-d-a-s-framework.md`](docs/security/l-e-j-d-a-s-framework.md) | The six-field safety gate and the L0–L3 escalation ladder |
-| [`docs/security/audit-protocol.md`](docs/security/audit-protocol.md) | Isolation, integrity, and failure-mode audit checklist |
-| [`docs/roadmap.md`](docs/roadmap.md) | Cascaded implementation roadmap, stage by stage |
-| [`docs/articles/anatomy-of-a-safe-agent.md`](docs/articles/anatomy-of-a-safe-agent.md) | Narrative walkthrough of the operational-planes model |
-| [`docs/articles/ptac-loop-journey.md`](docs/articles/ptac-loop-journey.md) | Narrative walkthrough of one Decision Packet's life cycle |
-| [`docs/open-questions.md`](docs/open-questions.md) | Every gap the source design left unspecified, consolidated |
-| [`docs/glossary.md`](docs/glossary.md) | KO, PTAC, AIDL, EGDS and other terms defined once |
+| `telemetry/transponder.py` | Validates event (schema v1.0, 9-event ENUM), enriches, atomic append. Zero network/git. CLI + `emit()` API. |
+| `telemetry/observer.py` | Passive parser: trace trees, handoff depth, cycles, orphan spawns, stale cores. Exit 0/1/2 = OK/WARN/CRITICAL. |
+| `telemetry/log_sync.sh` | Batch `git commit/push` only if changes exist; flock; exponential backoff; errors → `log_sync.err`. |
+| `telemetry/rotate.sh` | Copy+truncate rotation under the writer lock, gzip into `archive/`. |
+| `schemas/event_bus_payload.v1.json` | JSON Schema 2020-12 contract. |
+| `deploy/systemd/` | Timers for sync (5 min) and observer (1 min). |
+| `examples/demo.py` | Two-core handoff + spawn simulation. |
+| `tests/` | stdlib `unittest`, incl. 8-process concurrent write test. |
 
-## Core design pillars
+## Quick start
 
-- **Isolation** — the Reasoning Plane sandbox has blocked network sockets and
-  zero database credentials; it can propose, never mutate.
-- **Validation** — every Decision Packet is checked against JSON Schema
-  2020-12 and the L-E-J-D-A-S safety framework in an out-of-process sidecar
-  before it can reach the Execution Plane.
-- **Determinism** — Knowledge Object IDs are derived as
-  `SHA-256(subject || predicate)`, making duplicate or hallucinated facts
-  structurally impossible to insert twice.
-- **Auditability** — every step is appended to `event_stream.jsonl` with an
-  atomic `flush + os.fsync`, giving a tamper-resistant "Clean Trail" even
-  across a hard crash.
-- **Performance where it's safe to have it** — the Execution Plane is
-  deliberately *tightly* coupled (Next.js, SQLite WAL, Redis/BullMQ) to hit
-  sub-100ms CRUD latency; everything that touches the model is deliberately
-  *loosely* coupled to contain a compromise.
+```bash
+cp .env.example .env
+make test     # 14 tests
+make demo     # writes demo events, runs observer
 
-## Tech stack at a glance
+export CORE_ID=core-001 EVENT_LOG_PATH=telemetry/event_stream.jsonl
+python3 telemetry/transponder.py '{"event":"STEP_COMPLETED","execution_step":"18/42","data":{"status":"success"}}'
+python3 telemetry/observer.py --json
+```
 
-| Plane | Stack |
-|---|---|
-| Execution | Node.js v20+ (LTS), Next.js, TypeScript, SQLite (WAL), Redis, BullMQ, Zod |
-| Reasoning | Python 3.12, `agent.py`, ADK 2.0, JSON Schema 2020-12, `cryptography` (Ed25519) |
-| Control | Python, `validator.py`, isolated sidecar container |
-| Observability | Bash, Python (`transponder.py`, `observer.py`), `log_sync.sh`, Git 2.30+, systemd timers |
+From Python:
+
+```python
+from telemetry.transponder import emit
+emit({"event": "STEP_STARTED", "core_id": "core-001", "trace_id": tid, "span_id": sid, "parent_span_id": parent})
+```
+
+Requirements: Python 3.10+ (stdlib only), bash, git, util-linux (`flock`). Linux/macOS (uses `fcntl`).
+
+## Event contract (v1.0)
+
+Required: `schema`, `event_id`, `core_id`, `event`, `timestamp`.
+Events: `CORE_STARTED CORE_STOPPED HEARTBEAT STEP_STARTED STEP_COMPLETED STEP_FAILED SPAWN_REQUESTED SPAWN_COMPLETED FATAL_ERROR`.
+Execution events (`STEP_*`, `SPAWN_*`) always carry `trace_id`/`span_id` — generated as a root span if the caller omits them.
+Optional objects: `data`, `context_diff`, `guardrail_state`, `metrics`.
+
+## Deploy (systemd)
+
+```bash
+sudo cp -r . /opt/meta-core && sudo useradd -r metacore && sudo chown -R metacore /opt/meta-core
+sudo cp deploy/systemd/* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now log-sync.timer observer.timer
+```
+
+Wire `observer.service` exit code 2 to your kill switch (`OnFailure=`).
+
+## Decisions
+
+- **ADR-001** — No git in the Transponder. Push is batched by `log_sync.sh` (rate limits, latency, lock contention).
+- **ADR-002** — `trace_id` conditional: optional for lifecycle/heartbeat, auto-generated for execution events.
+- **ADR-003** — Rotation is copy+truncate under the writer's flock (rename could lose in-flight appends).
+
+## License
+
+TBD
