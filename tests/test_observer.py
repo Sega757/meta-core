@@ -2,7 +2,7 @@ import os, sys, unittest
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from telemetry.observer import analyze, span_depths
+from telemetry.observer import analyze, parse_ts, span_depths
 
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
 T = "a" * 32
@@ -21,6 +21,14 @@ def s(i):
 
 
 class ObserverTests(unittest.TestCase):
+    def test_parse_ts_accepts_iso_boundaries_and_rejects_invalid_types(self):
+        self.assertEqual(parse_ts("2026-09-28T12:00:00Z"), NOW)
+        self.assertEqual(parse_ts("2026-09-28T12:00:00+00:00"), NOW)
+        self.assertEqual(parse_ts("2026-09-28T12:00:00"), NOW.replace(tzinfo=None))
+        self.assertIsNone(parse_ts("2026-09-28T24:00:00Z"))
+        self.assertIsNone(parse_ts(None))
+        self.assertIsNone(parse_ts(0))
+
     def test_depths(self):
         d, cyc = span_depths({s(1): None, s(2): s(1), s(3): s(2)})
         self.assertEqual(d, {s(1): 0, s(2): 1, s(3): 2})
